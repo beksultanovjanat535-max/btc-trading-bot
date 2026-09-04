@@ -20,17 +20,19 @@ app = Flask(__name__)
 
 # ============================================================
 # КОНФИГУРАЦИЯ
+# ============================================================
+
 SYMBOL = "BTCUSDT"
 CHECK_INTERVAL = 300  # 5 минут
-RISK_PERCENT = 1.0  # 1% риск (легче считать)
+RISK_PERCENT = 1.0  # 1% риск
 LEVERAGE = 1  # Без плеча
 
 # Глобальные переменные
 current_price = 0
 last_signal = "Нет сигнала"
 signal_history = []
-balance = 100  # Баланс 100 долларов (риск 1% = 1 доллар)
-position = None  # Текущая позиция
+balance = 100  # Баланс 100 USDT
+position = None
 
 # ============================================================
 # FLASK ЭНДПОИНТЫ
@@ -40,23 +42,13 @@ position = None  # Текущая позиция
 def home():
     return jsonify({
         "status": "running",
-        "bot": "BTC Trading Bot PRO",
+        "bot": "BTC Trading Bot",
         "version": "3.0",
+        "balance": balance,
+        "price": current_price,
+        "last_signal": last_signal,
         "timestamp": datetime.now().isoformat()
     })
-
-@app.route("/price")
-def get_price():
-    try:
-        response = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
-        data = response.json()
-        return jsonify({
-            "symbol": data["symbol"],
-            "price": float(data["price"]),
-            "timestamp": datetime.now().isoformat()
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)})
 
 @app.route("/status")
 def status():
@@ -80,18 +72,18 @@ def get_signals():
         "timestamp": datetime.now().isoformat()
     })
 
-@app.route("/trade")
-def trade():
-    """Ручная торговля (тест)"""
-    global balance, position
-    signal = request.args.get('signal', 'BUY')
-    
-    if signal == "BUY":
-        return execute_trade("BUY")
-    elif signal == "SELL":
-        return execute_trade("SELL")
-    else:
-        return jsonify({"error": "Используйте BUY или SELL"})
+@app.route("/price")
+def get_price():
+    try:
+        response = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
+        data = response.json()
+        return jsonify({
+            "symbol": data["symbol"],
+            "price": float(data["price"]),
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 # ============================================================
 # ИНДИКАТОРЫ
@@ -198,7 +190,6 @@ def calculate_macd(data):
     ema26 = calculate_ema(data, 26)
     macd = ema12 - ema26
     
-    # Signal line (9-period EMA of MACD)
     macd_values = []
     for i in range(26, len(data)):
         ema12_i = calculate_ema(data[:i+1], 12)
@@ -216,7 +207,6 @@ def calculate_support_resistance(klines, lookback=20):
     lows = [k["low"] for k in klines[-lookback:]]
     closes = [k["close"] for k in klines[-lookback:]]
     
-    # Простой метод: локальные максимумы и минимумы
     resistance = max(highs)
     support = min(lows)
     pivot = sum(closes) / len(closes)
@@ -319,7 +309,6 @@ def analyze_market():
         signal = "SELL"
         reason = f"Сигналы: {', '.join(sell_signals)}"
     elif len(buy_signals) > 0 and len(sell_signals) > 0:
-        # Конфликт - выбираем самый сильный
         if "BUY_RSI_STRONG" in buy_signals or "BUY_SUPPORT" in buy_signals:
             signal = "BUY"
             reason = f"СИЛЬНЫЙ сигнал: {', '.join(buy_signals)}"
@@ -350,7 +339,7 @@ def analyze_market():
     }
 
 # ============================================================
-# ТОРГОВЛЯ (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+# ТОРГОВЛЯ
 # ============================================================
 
 def execute_trade(side):
@@ -362,7 +351,6 @@ def execute_trade(side):
         if price == 0:
             return {"error": "Цена не доступна"}
         
-        # Расчет размера позиции
         risk_money = balance * (RISK_PERCENT / 100)
         sl_distance = price * 0.02
         quantity = risk_money / sl_distance
@@ -372,7 +360,6 @@ def execute_trade(side):
             return {"error": "Объем слишком мал"}
         
         if side == "BUY":
-            # Покупаем
             cost = quantity * price
             if balance < cost:
                 return {"error": "Недостаточно баланса"}
@@ -401,7 +388,6 @@ def execute_trade(side):
             if not position:
                 return {"error": "Нет позиции для продажи"}
             
-            # Продаем
             pnl = (price - position["entry_price"]) * position["quantity"]
             balance += position["quantity"] * price
             position = None
@@ -424,7 +410,7 @@ def execute_trade(side):
         return {"error": str(e)}
 
 # ============================================================
-# ОСНОВНАЯ ФУНКЦИЯ (ИСПРАВЛЕННАЯ)
+# ОСНОВНАЯ ФУНКЦИЯ
 # ============================================================
 
 def check_market():
@@ -436,7 +422,6 @@ def check_market():
             logger.info("=" * 60)
             logger.info("🔍 ПРОВЕРКА РЫНКА")
             
-            # Получаем цену
             try:
                 response = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
                 data = response.json()
@@ -447,16 +432,13 @@ def check_market():
                 time.sleep(60)
                 continue
             
-            # Анализ рынка
             analysis = analyze_market()
             signal = analysis["signal"]
             reason = analysis["reason"]
             indicators = analysis["indicators"]
             
-            # Обновляем глобальные переменные
             last_signal = signal
             
-            # Добавляем в историю
             signal_entry = {
                 "time": datetime.now().isoformat(),
                 "signal": signal,
@@ -468,7 +450,6 @@ def check_market():
             if len(signal_history) > 100:
                 signal_history.pop(0)
             
-            # Вывод индикаторов
             logger.info(f"📊 EMA9: {indicators['ema9']:.2f}")
             logger.info(f"📊 EMA21: {indicators['ema21']:.2f}")
             logger.info(f"📊 RSI: {indicators['rsi']:.2f}")
@@ -478,7 +459,6 @@ def check_market():
             if indicators.get('support'):
                 logger.info(f"📊 S/R: S={indicators['support']:.2f}, R={indicators['resistance']:.2f}")
             
-            # Вывод сигнала и АВТОМАТИЧЕСКАЯ ТОРГОВЛЯ
             if signal == "BUY":
                 logger.info(f"🟢 BUY СИГНАЛ! {reason}")
                 if not position:
@@ -502,7 +482,6 @@ def check_market():
             else:
                 logger.info(f"⏸️ Нет сигнала: {reason}")
             
-            # Информация о позиции
             if position:
                 pnl = (current_price - position["entry_price"]) * position["quantity"]
                 logger.info(f"📈 Позиция: {position['quantity']:.3f} BTC, PnL: {pnl:.2f} USDT")
@@ -522,16 +501,14 @@ def check_market():
 
 if __name__ == "__main__":
     logger.info("=" * 60)
-    logger.info("🤖 БОТ PRO ВЕРСИЯ ЗАПУЩЕН")
+    logger.info("🤖 БОТ ЗАПУЩЕН")
     logger.info(f"📊 Символ: {SYMBOL}")
     logger.info(f"⏰ Проверка: каждые {CHECK_INTERVAL//60} минут")
-    logger.info(f"💰 Баланс: {balance:.2f} USDT")
-    logger.info("📊 Индикаторы: EMA, RSI, ATR, BB, MACD, S/R")
+    logger.info(f"💰 Баланс: {balance:.2f} USDT (ВИРТУАЛЬНЫЙ)")
+    logger.info(f"📉 Риск: {RISK_PERCENT}% (МАКС {balance * (RISK_PERCENT / 100):.2f} USDT)")
     logger.info("=" * 60)
     
-    # Запускаем проверку в отдельном потоке
     thread = threading.Thread(target=check_market, daemon=True)
     thread.start()
     
-    # Запускаем Flask
     app.run(host="0.0.0.0", port=5000)
