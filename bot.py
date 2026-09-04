@@ -352,7 +352,7 @@ def analyze_market():
     }
 
 # ============================================================
-# ТОРГОВЛЯ
+# ТОРГОВЛЯ (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 # ============================================================
 
 def execute_trade(side):
@@ -362,7 +362,7 @@ def execute_trade(side):
     try:
         price = current_price
         if price == 0:
-            return jsonify({"error": "Цена не доступна"})
+            return {"error": "Цена не доступна"}
         
         # Расчет размера позиции
         risk_money = balance * (RISK_PERCENT / 100)
@@ -371,13 +371,13 @@ def execute_trade(side):
         quantity = round(quantity, 3)
         
         if quantity < 0.001:
-            return jsonify({"error": "Объем слишком мал"})
+            return {"error": "Объем слишком мал"}
         
         if side == "BUY":
             # Покупаем
             cost = quantity * price
             if balance < cost:
-                return jsonify({"error": "Недостаточно баланса"})
+                return {"error": "Недостаточно баланса"}
             
             balance -= cost
             position = {
@@ -390,18 +390,18 @@ def execute_trade(side):
             last_signal = "BUY"
             
             logger.info(f"🟢 ПОКУПКА: {quantity:.3f} BTC по {price:.2f}")
-            return jsonify({
+            return {
                 "status": "success",
                 "action": "BUY",
                 "quantity": quantity,
                 "price": price,
                 "balance": balance,
                 "position": position
-            })
+            }
             
         elif side == "SELL":
             if not position:
-                return jsonify({"error": "Нет позиции для продажи"})
+                return {"error": "Нет позиции для продажи"}
             
             # Продаем
             pnl = (price - position["entry_price"]) * position["quantity"]
@@ -409,24 +409,24 @@ def execute_trade(side):
             position = None
             last_signal = "SELL"
             
-            logger.info(f"🔴 ПРОДАЖА: {quantity:.3f} BTC по {price:.2f}, PnL: {pnl:.2f}")
-            return jsonify({
+            logger.info(f"🔴 ПРОДАЖА: по {price:.2f}, PnL: {pnl:.2f}")
+            return {
                 "status": "success",
                 "action": "SELL",
                 "price": price,
                 "pnl": pnl,
                 "balance": balance,
                 "position": position
-            })
+            }
         
-        return jsonify({"error": "Неверная сторона"})
+        return {"error": "Неверная сторона"}
         
     except Exception as e:
         logger.error(f"Ошибка торговли: {e}")
-        return jsonify({"error": str(e)})
+        return {"error": str(e)}
 
 # ============================================================
-# ОСНОВНАЯ ФУНКЦИЯ
+# ОСНОВНАЯ ФУНКЦИЯ (ИСПРАВЛЕННАЯ)
 # ============================================================
 
 def check_market():
@@ -480,29 +480,24 @@ def check_market():
             if indicators.get('support'):
                 logger.info(f"📊 S/R: S={indicators['support']:.2f}, R={indicators['resistance']:.2f}")
             
-            # Вывод сигнала
+            # Вывод сигнала и АВТОМАТИЧЕСКАЯ ТОРГОВЛЯ
             if signal == "BUY":
-                logger.info(f"🟢 🟢 🟢 BUY СИГНАЛ! {reason}")
-                
-                # АВТОМАТИЧЕСКАЯ ТОРГОВЛЯ
+                logger.info(f"🟢 BUY СИГНАЛ! {reason}")
                 if not position:
                     logger.info("🚀 АВТОМАТИЧЕСКАЯ ПОКУПКА...")
-                    # Выполняем сделку
                     result = execute_trade("BUY")
                     if result and "error" not in result:
-                        logger.info(f"✅ Сделка выполнена!")
+                        logger.info(f"✅ Сделка выполнена! Баланс: {balance:.2f}")
                     else:
                         logger.error(f"❌ Ошибка: {result.get('error')}")
                 
             elif signal == "SELL":
-                logger.info(f"🔴 🔴 🔴 SELL СИГНАЛ! {reason}")
-                
-                # АВТОМАТИЧЕСКАЯ ТОРГОВЛЯ
+                logger.info(f"🔴 SELL СИГНАЛ! {reason}")
                 if position:
                     logger.info("🚀 АВТОМАТИЧЕСКАЯ ПРОДАЖА...")
                     result = execute_trade("SELL")
                     if result and "error" not in result:
-                        logger.info(f"✅ Сделка выполнена!")
+                        logger.info(f"✅ Сделка выполнена! Баланс: {balance:.2f}")
                     else:
                         logger.error(f"❌ Ошибка: {result.get('error')}")
                 
