@@ -31,8 +31,8 @@ LEVERAGE = 1  # Без плеча
 # TELEGRAM НАСТРОЙКИ (ВСТАВЬТЕ СВОИ ДАННЫЕ!)
 # ============================================================
 
-TELEGRAM_BOT_TOKEN = "8930303145:AAEI-SoKhSg5nH_PcMqwyHSiLoNw5QibQC8"  
-TELEGRAM_CHAT_ID = "6867317571"      
+TELEGRAM_BOT_TOKEN = "8930303145:AAEI-SoKhSg5nH_PcMqwyHSiLoNw5QibQC8"
+TELEGRAM_CHAT_ID = "6867317571"    
 
 # ============================================================
 # ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
