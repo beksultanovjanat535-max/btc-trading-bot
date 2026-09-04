@@ -3,11 +3,13 @@ import time
 import logging
 import requests
 import threading
-import random
 from datetime import datetime
 from flask import Flask, jsonify
 
-# Настройка логирования
+# ============================================================
+# НАСТРОЙКА
+# ============================================================
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -16,23 +18,32 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Конфигурация
+# ============================================================
+# КОНФИГУРАЦИЯ
+# ============================================================
+
 SYMBOL = "BTCUSDT"
 CHECK_INTERVAL = 300  # 5 минут
 RISK_PERCENT = 0.25
+LEVERAGE = 3
 
 # Глобальные переменные
 current_price = 0
-current_balance = 0
 last_signal = "Нет сигнала"
 signal_history = []
+balance = 10000  # Виртуальный баланс для теста
+position = None  # Текущая позиция
+
+# ============================================================
+# FLASK ЭНДПОИНТЫ
+# ============================================================
 
 @app.route("/")
 def home():
     return jsonify({
         "status": "running",
-        "bot": "BTC Trading Bot",
-        "version": "2.0",
+        "bot": "BTC Trading Bot PRO",
+        "version": "3.0",
         "timestamp": datetime.now().isoformat()
     })
 
@@ -54,31 +65,47 @@ def status():
     return jsonify({
         "symbol": SYMBOL,
         "price": current_price,
-        "balance": current_balance,
+        "balance": balance,
+        "position": position,
         "last_signal": last_signal,
-        "signal_history": signal_history[-5:],  # Последние 5 сигналов
+        "signal_history": signal_history[-10:],
         "timestamp": datetime.now().isoformat()
     })
 
 @app.route("/signals")
 def get_signals():
-    """Получить текущие сигналы"""
-    signals = analyze_market()
+    analysis = analyze_market()
     return jsonify({
         "symbol": SYMBOL,
         "price": current_price,
-        "signals": signals,
+        "signals": analysis,
         "timestamp": datetime.now().isoformat()
     })
 
-def get_klines(limit=50):
+@app.route("/trade")
+def trade():
+    """Ручная торговля (тест)"""
+    global balance, position
+    signal = request.args.get('signal', 'BUY')
+    
+    if signal == "BUY":
+        return execute_trade("BUY")
+    elif signal == "SELL":
+        return execute_trade("SELL")
+    else:
+        return jsonify({"error": "Используйте BUY или SELL"})
+
+# ============================================================
+# ИНДИКАТОРЫ
+# ============================================================
+
+def get_klines(limit=100):
     """Получить свечи"""
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL}&interval=5m&limit={limit}"
         response = requests.get(url)
         data = response.json()
         
-        # Преобразуем в удобный формат
         klines = []
         for candle in data:
             klines.append({
@@ -150,67 +177,265 @@ def calculate_atr(klines, period=14):
     
     return sum(tr_values[-period:]) / period
 
+def calculate_bollinger_bands(data, period=20, std=2):
+    """Расчет Bollinger Bands"""
+    if len(data) < period:
+        return None, None, None
+    
+    sma = sum(data[-period:]) / period
+    variance = sum((x - sma) ** 2 for x in data[-period:]) / period
+    std_dev = variance ** 0.5
+    
+    upper = sma + (std_dev * std)
+    lower = sma - (std_dev * std)
+    
+    return upper, sma, lower
+
+def calculate_macd(data):
+    """Расчет MACD"""
+    if len(data) < 26:
+        return None, None, None
+    
+    ema12 = calculate_ema(data, 12)
+    ema26 = calculate_ema(data, 26)
+    macd = ema12 - ema26
+    
+    # Signal line (9-period EMA of MACD)
+    macd_values = []
+    for i in range(26, len(data)):
+        ema12_i = calculate_ema(data[:i+1], 12)
+        ema26_i = calculate_ema(data[:i+1], 26)
+        macd_values.append(ema12_i - ema26_i)
+    
+    signal = calculate_ema(macd_values, 9) if len(macd_values) >= 9 else 0
+    histogram = macd - signal
+    
+    return macd, signal, histogram
+
+def calculate_support_resistance(klines, lookback=20):
+    """Расчет уровней поддержки и сопротивления"""
+    highs = [k["high"] for k in klines[-lookback:]]
+    lows = [k["low"] for k in klines[-lookback:]]
+    closes = [k["close"] for k in klines[-lookback:]]
+    
+    # Простой метод: локальные максимумы и минимумы
+    resistance = max(highs)
+    support = min(lows)
+    pivot = sum(closes) / len(closes)
+    
+    return support, pivot, resistance
+
+# ============================================================
+# АНАЛИЗ РЫНКА
+# ============================================================
+
 def analyze_market():
-    """Анализ рынка"""
+    """Полный анализ рынка со всеми индикаторами"""
     global current_price
     
-    # Получаем свечи
-    klines = get_klines(50)
+    klines = get_klines(100)
     if not klines or len(klines) < 30:
-        return {"signal": "NO", "reason": "Недостаточно данных"}
+        return {
+            "signal": "NO",
+            "reason": "Недостаточно данных",
+            "indicators": {}
+        }
     
-    # Извлекаем цены закрытия
-    closes = [c["close"] for c in klines]
+    closes = [k["close"] for k in klines]
     current_price = closes[-1]
     
-    # Расчет индикаторов
+    # 1. EMA
     ema9 = calculate_ema(closes, 9)
     ema21 = calculate_ema(closes, 21)
-    rsi = calculate_rsi(closes, 14)
-    atr = calculate_atr(klines, 14)
-    
-    # Анализ сигналов
-    signal = "NO"
-    reason = "Нет сигнала"
-    
-    # EMA сигналы
     prev_ema9 = calculate_ema(closes[:-1], 9)
     prev_ema21 = calculate_ema(closes[:-1], 21)
     
-    # Проверка пересечения EMA
-    if prev_ema9 <= prev_ema21 and ema9 > ema21 and rsi > 50:
-        signal = "BUY"
-        reason = f"EMA9 пересекла EMA21 вверх, RSI={rsi:.1f}"
-    elif prev_ema9 >= prev_ema21 and ema9 < ema21 and rsi < 50:
-        signal = "SELL"
-        reason = f"EMA9 пересекла EMA21 вниз, RSI={rsi:.1f}"
+    # 2. RSI
+    rsi = calculate_rsi(closes, 14)
     
-    # Проверка RSI экстремумов
-    if rsi > 70 and signal == "NO":
-        signal = "SELL"
-        reason = f"RSI перекупленность: {rsi:.1f}"
-    elif rsi < 30 and signal == "NO":
+    # 3. ATR
+    atr = calculate_atr(klines, 14)
+    
+    # 4. Bollinger Bands
+    upper_bb, middle_bb, lower_bb = calculate_bollinger_bands(closes, 20, 2)
+    
+    # 5. MACD
+    macd, signal_line, histogram = calculate_macd(closes)
+    
+    # 6. Support/Resistance
+    support, pivot, resistance = calculate_support_resistance(klines, 20)
+    
+    # ============================================================
+    # ГЕНЕРАЦИЯ СИГНАЛОВ
+    # ============================================================
+    
+    signals = []
+    signal = "NO"
+    reason = "Нет сигнала"
+    
+    # Сигнал 1: EMA пересечение
+    if prev_ema9 <= prev_ema21 and ema9 > ema21:
+        if rsi > 40:
+            signals.append("BUY_EMA")
+    elif prev_ema9 >= prev_ema21 and ema9 < ema21:
+        if rsi < 60:
+            signals.append("SELL_EMA")
+    
+    # Сигнал 2: RSI
+    if rsi < 30:
+        signals.append("BUY_RSI")
+        if rsi < 25:
+            signals.append("BUY_RSI_STRONG")
+    elif rsi > 70:
+        signals.append("SELL_RSI")
+        if rsi > 75:
+            signals.append("SELL_RSI_STRONG")
+    
+    # Сигнал 3: Bollinger Bands
+    if current_price < lower_bb:
+        signals.append("BUY_BB")
+    elif current_price > upper_bb:
+        signals.append("SELL_BB")
+    
+    # Сигнал 4: MACD
+    if macd and signal_line:
+        if macd > signal_line and histogram > 0:
+            signals.append("BUY_MACD")
+        elif macd < signal_line and histogram < 0:
+            signals.append("SELL_MACD")
+    
+    # Сигнал 5: Support/Resistance
+    if current_price <= support * 1.01:
+        signals.append("BUY_SUPPORT")
+    elif current_price >= resistance * 0.99:
+        signals.append("SELL_RESISTANCE")
+    
+    # Определяем основной сигнал
+    buy_signals = [s for s in signals if s.startswith("BUY")]
+    sell_signals = [s for s in signals if s.startswith("SELL")]
+    
+    if len(buy_signals) > 0 and len(sell_signals) == 0:
         signal = "BUY"
-        reason = f"RSI перепроданность: {rsi:.1f}"
+        reason = f"Сигналы: {', '.join(buy_signals)}"
+    elif len(sell_signals) > 0 and len(buy_signals) == 0:
+        signal = "SELL"
+        reason = f"Сигналы: {', '.join(sell_signals)}"
+    elif len(buy_signals) > 0 and len(sell_signals) > 0:
+        # Конфликт - выбираем самый сильный
+        if "BUY_RSI_STRONG" in buy_signals or "BUY_SUPPORT" in buy_signals:
+            signal = "BUY"
+            reason = f"СИЛЬНЫЙ сигнал: {', '.join(buy_signals)}"
+        elif "SELL_RSI_STRONG" in sell_signals or "SELL_RESISTANCE" in sell_signals:
+            signal = "SELL"
+            reason = f"СИЛЬНЫЙ сигнал: {', '.join(sell_signals)}"
     
     return {
         "signal": signal,
         "reason": reason,
+        "signals_count": len(signals),
+        "all_signals": signals,
         "indicators": {
             "ema9": round(ema9, 2),
             "ema21": round(ema21, 2),
             "rsi": round(rsi, 2),
-            "atr": round(atr, 2)
+            "atr": round(atr, 2),
+            "bb_upper": round(upper_bb, 2) if upper_bb else None,
+            "bb_middle": round(middle_bb, 2) if middle_bb else None,
+            "bb_lower": round(lower_bb, 2) if lower_bb else None,
+            "macd": round(macd, 4) if macd else None,
+            "macd_signal": round(signal_line, 4) if signal_line else None,
+            "macd_hist": round(histogram, 4) if histogram else None,
+            "support": round(support, 2),
+            "pivot": round(pivot, 2),
+            "resistance": round(resistance, 2)
         }
     }
 
+# ============================================================
+# ТОРГОВЛЯ
+# ============================================================
+
+def execute_trade(side):
+    """Выполнение сделки (симуляция)"""
+    global balance, position, last_signal
+    
+    try:
+        price = current_price
+        if price == 0:
+            return jsonify({"error": "Цена не доступна"})
+        
+        # Расчет размера позиции
+        risk_money = balance * (RISK_PERCENT / 100)
+        sl_distance = price * 0.02
+        quantity = risk_money / sl_distance
+        quantity = round(quantity, 3)
+        
+        if quantity < 0.001:
+            return jsonify({"error": "Объем слишком мал"})
+        
+        if side == "BUY":
+            # Покупаем
+            cost = quantity * price
+            if balance < cost:
+                return jsonify({"error": "Недостаточно баланса"})
+            
+            balance -= cost
+            position = {
+                "side": "LONG",
+                "quantity": quantity,
+                "entry_price": price,
+                "current_price": price,
+                "pnl": 0
+            }
+            last_signal = "BUY"
+            
+            logger.info(f"🟢 ПОКУПКА: {quantity:.3f} BTC по {price:.2f}")
+            return jsonify({
+                "status": "success",
+                "action": "BUY",
+                "quantity": quantity,
+                "price": price,
+                "balance": balance,
+                "position": position
+            })
+            
+        elif side == "SELL":
+            if not position:
+                return jsonify({"error": "Нет позиции для продажи"})
+            
+            # Продаем
+            pnl = (price - position["entry_price"]) * position["quantity"]
+            balance += position["quantity"] * price
+            position = None
+            last_signal = "SELL"
+            
+            logger.info(f"🔴 ПРОДАЖА: {quantity:.3f} BTC по {price:.2f}, PnL: {pnl:.2f}")
+            return jsonify({
+                "status": "success",
+                "action": "SELL",
+                "price": price,
+                "pnl": pnl,
+                "balance": balance,
+                "position": position
+            })
+        
+        return jsonify({"error": "Неверная сторона"})
+        
+    except Exception as e:
+        logger.error(f"Ошибка торговли: {e}")
+        return jsonify({"error": str(e)})
+
+# ============================================================
+# ОСНОВНАЯ ФУНКЦИЯ
+# ============================================================
+
 def check_market():
     """Основная функция проверки рынка"""
-    global last_signal, signal_history
+    global last_signal, signal_history, position, balance
     
     while True:
         try:
-            logger.info("=" * 50)
+            logger.info("=" * 60)
             logger.info("🔍 ПРОВЕРКА РЫНКА")
             
             # Получаем цену
@@ -228,6 +453,7 @@ def check_market():
             analysis = analyze_market()
             signal = analysis["signal"]
             reason = analysis["reason"]
+            indicators = analysis["indicators"]
             
             # Обновляем глобальные переменные
             last_signal = signal
@@ -237,34 +463,78 @@ def check_market():
                 "time": datetime.now().isoformat(),
                 "signal": signal,
                 "price": current_price,
-                "reason": reason
+                "reason": reason,
+                "indicators": indicators
             }
             signal_history.append(signal_entry)
             if len(signal_history) > 100:
                 signal_history.pop(0)
             
+            # Вывод индикаторов
+            logger.info(f"📊 EMA9: {indicators['ema9']:.2f}")
+            logger.info(f"📊 EMA21: {indicators['ema21']:.2f}")
+            logger.info(f"📊 RSI: {indicators['rsi']:.2f}")
+            logger.info(f"📊 ATR: {indicators['atr']:.2f}")
+            if indicators.get('bb_upper'):
+                logger.info(f"📊 BB: {indicators['bb_lower']:.2f} - {indicators['bb_middle']:.2f} - {indicators['bb_upper']:.2f}")
+            if indicators.get('support'):
+                logger.info(f"📊 S/R: S={indicators['support']:.2f}, R={indicators['resistance']:.2f}")
+            
             # Вывод сигнала
             if signal == "BUY":
-                logger.info(f"🟢 BUY СИГНАЛ! {reason}")
+                logger.info(f"🟢 🟢 🟢 BUY СИГНАЛ! {reason}")
+                
+                # АВТОМАТИЧЕСКАЯ ТОРГОВЛЯ
+                if not position:
+                    logger.info("🚀 АВТОМАТИЧЕСКАЯ ПОКУПКА...")
+                    # Выполняем сделку
+                    result = execute_trade("BUY")
+                    if result and "error" not in result:
+                        logger.info(f"✅ Сделка выполнена!")
+                    else:
+                        logger.error(f"❌ Ошибка: {result.get('error')}")
+                
             elif signal == "SELL":
-                logger.info(f"🔴 SELL СИГНАЛ! {reason}")
+                logger.info(f"🔴 🔴 🔴 SELL СИГНАЛ! {reason}")
+                
+                # АВТОМАТИЧЕСКАЯ ТОРГОВЛЯ
+                if position:
+                    logger.info("🚀 АВТОМАТИЧЕСКАЯ ПРОДАЖА...")
+                    result = execute_trade("SELL")
+                    if result and "error" not in result:
+                        logger.info(f"✅ Сделка выполнена!")
+                    else:
+                        logger.error(f"❌ Ошибка: {result.get('error')}")
+                
             else:
                 logger.info(f"⏸️ Нет сигнала: {reason}")
             
-            logger.info(f"📊 Индикаторы: EMA9={analysis['indicators']['ema9']}, EMA21={analysis['indicators']['ema21']}, RSI={analysis['indicators']['rsi']}")
-            logger.info("=" * 50)
+            # Информация о позиции
+            if position:
+                pnl = (current_price - position["entry_price"]) * position["quantity"]
+                logger.info(f"📈 Позиция: {position['quantity']:.3f} BTC, PnL: {pnl:.2f} USDT")
+            else:
+                logger.info(f"💰 Баланс: {balance:.2f} USDT")
+            
+            logger.info("=" * 60)
             
         except Exception as e:
             logger.error(f"❌ Ошибка: {e}")
         
         time.sleep(CHECK_INTERVAL)
 
+# ============================================================
+# ЗАПУСК
+# ============================================================
+
 if __name__ == "__main__":
-    logger.info("=" * 50)
-    logger.info("🤖 БОТ С ТОРГОВЫМИ СИГНАЛАМИ ЗАПУЩЕН")
+    logger.info("=" * 60)
+    logger.info("🤖 БОТ PRO ВЕРСИЯ ЗАПУЩЕН")
     logger.info(f"📊 Символ: {SYMBOL}")
     logger.info(f"⏰ Проверка: каждые {CHECK_INTERVAL//60} минут")
-    logger.info("=" * 50)
+    logger.info(f"💰 Баланс: {balance:.2f} USDT")
+    logger.info("📊 Индикаторы: EMA, RSI, ATR, BB, MACD, S/R")
+    logger.info("=" * 60)
     
     # Запускаем проверку в отдельном потоке
     thread = threading.Thread(target=check_market, daemon=True)
