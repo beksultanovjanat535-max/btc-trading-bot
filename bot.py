@@ -35,7 +35,7 @@ balance = 100  # Баланс 100 USDT
 position = None
 
 # ============================================================
-# FLASK ЭНДПОИНТЫ
+# СТРАНИЦЫ (ЭНДПОИНТЫ)
 # ============================================================
 
 @app.route("/")
@@ -52,6 +52,7 @@ def home():
 
 @app.route("/status")
 def status():
+    """Полный статус бота"""
     return jsonify({
         "symbol": SYMBOL,
         "price": current_price,
@@ -64,6 +65,7 @@ def status():
 
 @app.route("/signals")
 def get_signals():
+    """Текущие сигналы и индикаторы"""
     analysis = analyze_market()
     return jsonify({
         "symbol": SYMBOL,
@@ -74,6 +76,7 @@ def get_signals():
 
 @app.route("/price")
 def get_price():
+    """Текущая цена BTC"""
     try:
         response = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
         data = response.json()
@@ -280,9 +283,9 @@ def analyze_market():
             signals.append("SELL_RSI_STRONG")
     
     # Сигнал 3: Bollinger Bands
-    if current_price < lower_bb:
+    if lower_bb and current_price < lower_bb:
         signals.append("BUY_BB")
-    elif current_price > upper_bb:
+    elif upper_bb and current_price > upper_bb:
         signals.append("SELL_BB")
     
     # Сигнал 4: MACD
