@@ -27,12 +27,44 @@ CHECK_INTERVAL = 300  # 5 минут
 RISK_PERCENT = 1.0  # 1% риск
 LEVERAGE = 1  # Без плеча
 
-# Глобальные переменные
+# ============================================================
+# TELEGRAM НАСТРОЙКИ (ВСТАВЬТЕ СВОИ ДАННЫЕ!)
+# ============================================================
+
+TELEGRAM_BOT_TOKEN = "8930303145:AAEI-SoKhSg5nH_PcMqwyHSiLoNw5QibQC8"  
+TELEGRAM_CHAT_ID = "6867317571"      
+
+# ============================================================
+# ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
+# ============================================================
+
 current_price = 0
 last_signal = "Нет сигнала"
 signal_history = []
-balance = 100  # Баланс 100 USDT
+balance = 100  # Виртуальный баланс
 position = None
+
+# ============================================================
+# ФУНКЦИЯ ОТПРАВКИ В TELEGRAM
+# ============================================================
+
+def send_telegram(message):
+    """Отправить сообщение в Telegram"""
+    try:
+        import requests as telegram_requests
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
+        }
+        response = telegram_requests.post(url, json=payload)
+        if response.status_code == 200:
+            logger.info("✅ Сообщение отправлено в Telegram")
+        else:
+            logger.error(f"❌ Ошибка отправки: {response.text}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка Telegram: {e}")
 
 # ============================================================
 # СТРАНИЦЫ (ЭНДПОИНТЫ)
@@ -52,7 +84,6 @@ def home():
 
 @app.route("/status")
 def status():
-    """Полный статус бота"""
     return jsonify({
         "symbol": SYMBOL,
         "price": current_price,
@@ -65,7 +96,6 @@ def status():
 
 @app.route("/signals")
 def get_signals():
-    """Текущие сигналы и индикаторы"""
     analysis = analyze_market()
     return jsonify({
         "symbol": SYMBOL,
@@ -76,7 +106,6 @@ def get_signals():
 
 @app.route("/price")
 def get_price():
-    """Текущая цена BTC"""
     try:
         response = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
         data = response.json()
@@ -93,7 +122,6 @@ def get_price():
 # ============================================================
 
 def get_klines(limit=100):
-    """Получить свечи"""
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL}&interval=5m&limit={limit}"
         response = requests.get(url)
@@ -114,7 +142,6 @@ def get_klines(limit=100):
         return []
 
 def calculate_ema(data, period):
-    """Расчет EMA"""
     if len(data) < period:
         return data[-1] if data else 0
     
@@ -125,7 +152,6 @@ def calculate_ema(data, period):
     return ema
 
 def calculate_rsi(data, period=14):
-    """Расчет RSI"""
     if len(data) < period + 1:
         return 50
     
@@ -152,7 +178,6 @@ def calculate_rsi(data, period=14):
     return rsi
 
 def calculate_atr(klines, period=14):
-    """Расчет ATR"""
     if len(klines) < period + 1:
         return 0
     
@@ -171,7 +196,6 @@ def calculate_atr(klines, period=14):
     return sum(tr_values[-period:]) / period
 
 def calculate_bollinger_bands(data, period=20, std=2):
-    """Расчет Bollinger Bands"""
     if len(data) < period:
         return None, None, None
     
@@ -185,7 +209,6 @@ def calculate_bollinger_bands(data, period=20, std=2):
     return upper, sma, lower
 
 def calculate_macd(data):
-    """Расчет MACD"""
     if len(data) < 26:
         return None, None, None
     
@@ -205,7 +228,6 @@ def calculate_macd(data):
     return macd, signal, histogram
 
 def calculate_support_resistance(klines, lookback=20):
-    """Расчет уровней поддержки и сопротивления"""
     highs = [k["high"] for k in klines[-lookback:]]
     lows = [k["low"] for k in klines[-lookback:]]
     closes = [k["close"] for k in klines[-lookback:]]
@@ -221,7 +243,6 @@ def calculate_support_resistance(klines, lookback=20):
 # ============================================================
 
 def analyze_market():
-    """Полный анализ рынка со всеми индикаторами"""
     global current_price
     
     klines = get_klines(100)
@@ -235,36 +256,20 @@ def analyze_market():
     closes = [k["close"] for k in klines]
     current_price = closes[-1]
     
-    # 1. EMA
     ema9 = calculate_ema(closes, 9)
     ema21 = calculate_ema(closes, 21)
     prev_ema9 = calculate_ema(closes[:-1], 9)
     prev_ema21 = calculate_ema(closes[:-1], 21)
-    
-    # 2. RSI
     rsi = calculate_rsi(closes, 14)
-    
-    # 3. ATR
     atr = calculate_atr(klines, 14)
-    
-    # 4. Bollinger Bands
     upper_bb, middle_bb, lower_bb = calculate_bollinger_bands(closes, 20, 2)
-    
-    # 5. MACD
     macd, signal_line, histogram = calculate_macd(closes)
-    
-    # 6. Support/Resistance
     support, pivot, resistance = calculate_support_resistance(klines, 20)
-    
-    # ============================================================
-    # ГЕНЕРАЦИЯ СИГНАЛОВ
-    # ============================================================
     
     signals = []
     signal = "NO"
     reason = "Нет сигнала"
     
-    # Сигнал 1: EMA пересечение
     if prev_ema9 <= prev_ema21 and ema9 > ema21:
         if rsi > 40:
             signals.append("BUY_EMA")
@@ -272,7 +277,6 @@ def analyze_market():
         if rsi < 60:
             signals.append("SELL_EMA")
     
-    # Сигнал 2: RSI
     if rsi < 30:
         signals.append("BUY_RSI")
         if rsi < 25:
@@ -282,26 +286,22 @@ def analyze_market():
         if rsi > 75:
             signals.append("SELL_RSI_STRONG")
     
-    # Сигнал 3: Bollinger Bands
     if lower_bb and current_price < lower_bb:
         signals.append("BUY_BB")
     elif upper_bb and current_price > upper_bb:
         signals.append("SELL_BB")
     
-    # Сигнал 4: MACD
     if macd and signal_line:
         if macd > signal_line and histogram > 0:
             signals.append("BUY_MACD")
         elif macd < signal_line and histogram < 0:
             signals.append("SELL_MACD")
     
-    # Сигнал 5: Support/Resistance
     if current_price <= support * 1.01:
         signals.append("BUY_SUPPORT")
     elif current_price >= resistance * 0.99:
         signals.append("SELL_RESISTANCE")
     
-    # Определяем основной сигнал
     buy_signals = [s for s in signals if s.startswith("BUY")]
     sell_signals = [s for s in signals if s.startswith("SELL")]
     
@@ -342,11 +342,11 @@ def analyze_market():
     }
 
 # ============================================================
-# ТОРГОВЛЯ
+# ТОРГОВЛЯ С TELEGRAM УВЕДОМЛЕНИЯМИ
 # ============================================================
 
 def execute_trade(side):
-    """Выполнение сделки (симуляция)"""
+    """Выполнение сделки с уведомлением в Telegram"""
     global balance, position, last_signal
     
     try:
@@ -378,6 +378,17 @@ def execute_trade(side):
             last_signal = "BUY"
             
             logger.info(f"🟢 ПОКУПКА: {quantity:.3f} BTC по {price:.2f}")
+            
+            # Telegram уведомление о покупке
+            msg = f"""
+🟢 <b>НОВАЯ ПОКУПКА</b>
+💰 Сумма: {quantity:.3f} BTC
+💵 Цена: {price:.2f} USDT
+📊 Баланс: {balance:.2f} USDT
+⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            """
+            send_telegram(msg)
+            
             return {
                 "status": "success",
                 "action": "BUY",
@@ -397,6 +408,17 @@ def execute_trade(side):
             last_signal = "SELL"
             
             logger.info(f"🔴 ПРОДАЖА: по {price:.2f}, PnL: {pnl:.2f}")
+            
+            # Telegram уведомление о продаже
+            msg = f"""
+🔴 <b>ПРОДАЖА</b>
+💵 Цена: {price:.2f} USDT
+📈 Прибыль: {pnl:.2f} USDT
+💰 Баланс: {balance:.2f} USDT
+⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            """
+            send_telegram(msg)
+            
             return {
                 "status": "success",
                 "action": "SELL",
@@ -413,12 +435,15 @@ def execute_trade(side):
         return {"error": str(e)}
 
 # ============================================================
-# ОСНОВНАЯ ФУНКЦИЯ
+# ОСНОВНАЯ ФУНКЦИЯ С TELEGRAM УВЕДОМЛЕНИЯМИ
 # ============================================================
 
 def check_market():
-    """Основная функция проверки рынка"""
+    """Основная функция проверки рынка с уведомлениями"""
     global last_signal, signal_history, position, balance
+    
+    # Уведомление о запуске
+    send_telegram("🚀 <b>Бот запущен!</b> Начинаю мониторинг рынка...")
     
     while True:
         try:
@@ -464,6 +489,16 @@ def check_market():
             
             if signal == "BUY":
                 logger.info(f"🟢 BUY СИГНАЛ! {reason}")
+                
+                # Уведомление о сигнале BUY
+                msg = f"""
+🟢 <b>СИГНАЛ BUY</b>
+📊 {reason}
+💵 Цена: {current_price:.2f} USDT
+⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                """
+                send_telegram(msg)
+                
                 if not position:
                     logger.info("🚀 АВТОМАТИЧЕСКАЯ ПОКУПКА...")
                     result = execute_trade("BUY")
@@ -474,6 +509,16 @@ def check_market():
                 
             elif signal == "SELL":
                 logger.info(f"🔴 SELL СИГНАЛ! {reason}")
+                
+                # Уведомление о сигнале SELL
+                msg = f"""
+🔴 <b>СИГНАЛ SELL</b>
+📊 {reason}
+💵 Цена: {current_price:.2f} USDT
+⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                """
+                send_telegram(msg)
+                
                 if position:
                     logger.info("🚀 АВТОМАТИЧЕСКАЯ ПРОДАЖА...")
                     result = execute_trade("SELL")
@@ -495,6 +540,7 @@ def check_market():
             
         except Exception as e:
             logger.error(f"❌ Ошибка: {e}")
+            send_telegram(f"⚠️ <b>Ошибка в боте:</b> {str(e)}")
         
         time.sleep(CHECK_INTERVAL)
 
@@ -504,11 +550,12 @@ def check_market():
 
 if __name__ == "__main__":
     logger.info("=" * 60)
-    logger.info("🤖 БОТ ЗАПУЩЕН")
+    logger.info("🤖 БОТ С TELEGRAM УВЕДОМЛЕНИЯМИ ЗАПУЩЕН")
     logger.info(f"📊 Символ: {SYMBOL}")
     logger.info(f"⏰ Проверка: каждые {CHECK_INTERVAL//60} минут")
     logger.info(f"💰 Баланс: {balance:.2f} USDT (ВИРТУАЛЬНЫЙ)")
     logger.info(f"📉 Риск: {RISK_PERCENT}% (МАКС {balance * (RISK_PERCENT / 100):.2f} USDT)")
+    logger.info("📱 Telegram уведомления: ВКЛЮЧЕНЫ")
     logger.info("=" * 60)
     
     thread = threading.Thread(target=check_market, daemon=True)
