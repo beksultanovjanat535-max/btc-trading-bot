@@ -30,7 +30,7 @@ LEVERAGE = 1          # Без плеча
 # НОВЫЕ НАСТРОЙКИ
 balance = 150         # Баланс 150 USDT
 SL_PERCENT = 1.5      # Стоп-лосс 1.5%
-TP_PERCENT = 4.0      # Тейк-профит 4%
+TP_PERCENT = 6.0      # Тейк-профит 6% ✅
 
 # ============================================================
 # TELEGRAM НАСТРОЙКИ (ВСТАВЬТЕ СВОИ ДАННЫЕ!)
@@ -38,7 +38,6 @@ TP_PERCENT = 4.0      # Тейк-профит 4%
 
 TELEGRAM_BOT_TOKEN = "8930303145:AAEI-SoKhSg5nH_PcMqwyHSiLoNw5QibQC8"
 TELEGRAM_CHAT_ID = "6867317571"
-
 # ============================================================
 # ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 # ============================================================
@@ -358,7 +357,6 @@ def execute_trade(side):
         if price == 0:
             return {"error": "Цена не доступна"}
         
-        # НОВЫЕ РАСЧЕТЫ с SL_PERCENT и TP_PERCENT
         sl_distance = price * (SL_PERCENT / 100)
         tp_distance = price * (TP_PERCENT / 100)
         
@@ -381,21 +379,20 @@ def execute_trade(side):
                 "entry_price": price,
                 "current_price": price,
                 "pnl": 0,
-                "sl_price": price - sl_distance,  # Стоп-лосс цена
-                "tp_price": price + tp_distance   # Тейк-профит цена
+                "sl_price": price - sl_distance,
+                "tp_price": price + tp_distance
             }
             last_signal = "BUY"
             
             logger.info(f"🟢 ПОКУПКА: {quantity:.3f} BTC по {price:.2f}")
             
-            # Telegram уведомление о покупке
             msg = f"""
 🟢 <b>НОВАЯ ПОКУПКА</b>
 💰 Сумма: {quantity:.3f} BTC
 💵 Цена: {price:.2f} USDT
 📊 Баланс: {balance:.2f} USDT
-🛑 Стоп-лосс: {position['sl_price']:.2f} USDT
-🎯 Тейк-профит: {position['tp_price']:.2f} USDT
+🛑 Стоп-лосс: {position['sl_price']:.2f} USDT (-{SL_PERCENT}%)
+🎯 Тейк-профит: {position['tp_price']:.2f} USDT (+{TP_PERCENT}%)
 ⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             """
             send_telegram(msg)
@@ -420,7 +417,6 @@ def execute_trade(side):
             
             logger.info(f"🔴 ПРОДАЖА: по {price:.2f}, PnL: {pnl:.2f}")
             
-            # ПРОВЕРЯЕМ ПРИБЫЛЬ ИЛИ УБЫТОК
             if pnl > 0:
                 profit_emoji = "📈"
                 profit_text = f"ПРИБЫЛЬ: +{pnl:.2f} USDT ✅"
@@ -428,7 +424,6 @@ def execute_trade(side):
                 profit_emoji = "📉"
                 profit_text = f"УБЫТОК: {pnl:.2f} USDT ❌"
             
-            # Telegram уведомление о продаже с ПРИБЫЛЬЮ
             msg = f"""
 🔴 <b>ПРОДАЖА</b>
 {profit_emoji} <b>{profit_text}</b>
@@ -454,14 +449,12 @@ def execute_trade(side):
         return {"error": str(e)}
 
 # ============================================================
-# ОСНОВНАЯ ФУНКЦИЯ С TELEGRAM УВЕДОМЛЕНИЯМИ
+# ОСНОВНАЯ ФУНКЦИЯ
 # ============================================================
 
 def check_market():
-    """Основная функция проверки рынка с уведомлениями"""
     global last_signal, signal_history, position, balance
     
-    # Уведомление о запуске
     send_telegram("🚀 <b>Бот запущен!</b> Начинаю мониторинг рынка...")
     
     while True:
@@ -509,7 +502,6 @@ def check_market():
             if signal == "BUY":
                 logger.info(f"🟢 BUY СИГНАЛ! {reason}")
                 
-                # Уведомление о сигнале BUY
                 msg = f"""
 🟢 <b>СИГНАЛ BUY</b>
 📊 {reason}
@@ -529,7 +521,6 @@ def check_market():
             elif signal == "SELL":
                 logger.info(f"🔴 SELL СИГНАЛ! {reason}")
                 
-                # Уведомление о сигнале SELL
                 msg = f"""
 🔴 <b>СИГНАЛ SELL</b>
 📊 {reason}
@@ -575,7 +566,7 @@ if __name__ == "__main__":
     logger.info(f"💰 Баланс: {balance:.2f} USDT (ВИРТУАЛЬНЫЙ)")
     logger.info(f"📉 Риск: {RISK_PERCENT}% (МАКС {balance * (RISK_PERCENT / 100):.2f} USDT)")
     logger.info(f"📉 Стоп-лосс: {SL_PERCENT}%")
-    logger.info(f"📈 Тейк-профит: {TP_PERCENT}%")
+    logger.info(f"📈 Тейк-профит: {TP_PERCENT}% ✅")
     logger.info("📱 Telegram уведомления: ВКЛЮЧЕНЫ")
     logger.info("=" * 60)
     
