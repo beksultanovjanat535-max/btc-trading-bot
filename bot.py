@@ -24,8 +24,13 @@ app = Flask(__name__)
 
 SYMBOL = "BTCUSDT"
 CHECK_INTERVAL = 300  # 5 минут
-RISK_PERCENT = 1.0  # 1% риск
-LEVERAGE = 1  # Без плеча
+RISK_PERCENT = 1.0    # 1% риск
+LEVERAGE = 1          # Без плеча
+
+# НОВЫЕ НАСТРОЙКИ
+balance = 150         # Баланс 150 USDT
+SL_PERCENT = 1.5      # Стоп-лосс 1.5%
+TP_PERCENT = 4.0      # Тейк-профит 4%
 
 # ============================================================
 # TELEGRAM НАСТРОЙКИ (ВСТАВЬТЕ СВОИ ДАННЫЕ!)
@@ -41,7 +46,6 @@ TELEGRAM_CHAT_ID = "6867317571"
 current_price = 0
 last_signal = "Нет сигнала"
 signal_history = []
-balance = 100  # Виртуальный баланс
 position = None
 
 # ============================================================
@@ -354,8 +358,11 @@ def execute_trade(side):
         if price == 0:
             return {"error": "Цена не доступна"}
         
+        # НОВЫЕ РАСЧЕТЫ с SL_PERCENT и TP_PERCENT
+        sl_distance = price * (SL_PERCENT / 100)
+        tp_distance = price * (TP_PERCENT / 100)
+        
         risk_money = balance * (RISK_PERCENT / 100)
-        sl_distance = price * 0.02
         quantity = risk_money / sl_distance
         quantity = round(quantity, 3)
         
@@ -373,7 +380,9 @@ def execute_trade(side):
                 "quantity": quantity,
                 "entry_price": price,
                 "current_price": price,
-                "pnl": 0
+                "pnl": 0,
+                "sl_price": price - sl_distance,  # Стоп-лосс цена
+                "tp_price": price + tp_distance   # Тейк-профит цена
             }
             last_signal = "BUY"
             
@@ -385,6 +394,8 @@ def execute_trade(side):
 💰 Сумма: {quantity:.3f} BTC
 💵 Цена: {price:.2f} USDT
 📊 Баланс: {balance:.2f} USDT
+🛑 Стоп-лосс: {position['sl_price']:.2f} USDT
+🎯 Тейк-профит: {position['tp_price']:.2f} USDT
 ⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             """
             send_telegram(msg)
@@ -409,12 +420,20 @@ def execute_trade(side):
             
             logger.info(f"🔴 ПРОДАЖА: по {price:.2f}, PnL: {pnl:.2f}")
             
-            # Telegram уведомление о продаже
+            # ПРОВЕРЯЕМ ПРИБЫЛЬ ИЛИ УБЫТОК
+            if pnl > 0:
+                profit_emoji = "📈"
+                profit_text = f"ПРИБЫЛЬ: +{pnl:.2f} USDT ✅"
+            else:
+                profit_emoji = "📉"
+                profit_text = f"УБЫТОК: {pnl:.2f} USDT ❌"
+            
+            # Telegram уведомление о продаже с ПРИБЫЛЬЮ
             msg = f"""
 🔴 <b>ПРОДАЖА</b>
-💵 Цена: {price:.2f} USDT
-📈 Прибыль: {pnl:.2f} USDT
-💰 Баланс: {balance:.2f} USDT
+{profit_emoji} <b>{profit_text}</b>
+💵 Цена продажи: {price:.2f} USDT
+📊 Баланс: {balance:.2f} USDT
 ⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             """
             send_telegram(msg)
@@ -555,6 +574,8 @@ if __name__ == "__main__":
     logger.info(f"⏰ Проверка: каждые {CHECK_INTERVAL//60} минут")
     logger.info(f"💰 Баланс: {balance:.2f} USDT (ВИРТУАЛЬНЫЙ)")
     logger.info(f"📉 Риск: {RISK_PERCENT}% (МАКС {balance * (RISK_PERCENT / 100):.2f} USDT)")
+    logger.info(f"📉 Стоп-лосс: {SL_PERCENT}%")
+    logger.info(f"📈 Тейк-профит: {TP_PERCENT}%")
     logger.info("📱 Telegram уведомления: ВКЛЮЧЕНЫ")
     logger.info("=" * 60)
     
