@@ -125,11 +125,14 @@ def send_hourly_report():
         logger.error(f"Ошибка отправки отчета: {e}")
 
 def send_15min_report():
-    """Отчет каждые 15 минут"""
+    """Отчет каждые 15 минут (с реальной ценой)"""
     global current_price, position, last_signal
     
     try:
-        price = current_price
+        # Получаем цену напрямую с Binance
+        response = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
+        data = response.json()
+        price = float(data["price"])
         
         pos_info = "Нет позиции"
         pnl_info = "0.00"
@@ -156,6 +159,8 @@ def send_15min_report():
         
     except Exception as e:
         logger.error(f"Ошибка отправки 15-минутного отчета: {e}")
+        # Если ошибка — используем текущую цену из глобальной переменной
+        price = current_price
 
 # ============================================================
 # СТРАНИЦЫ (ЭНДПОИНТЫ)
