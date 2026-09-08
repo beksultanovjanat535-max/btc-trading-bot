@@ -40,8 +40,8 @@ TP3 = 6.0             # Трейлинг-стоп с +6%
 # TELEGRAM НАСТРОЙКИ (ВСТАВЬТЕ СВОИ ДАННЫЕ!)
 # ============================================================
 
-TELEGRAM_BOT_TOKEN = "8930303145:AAEI-SoKhSg5nH_PcMqwyHSiLoNw5QibQC8"
-TELEGRAM_CHAT_ID = "6867317571"
+TELEGRAM_BOT_TOKEN = "ВАШ_ТОКЕН_ОТ_BOTFATHER"
+TELEGRAM_CHAT_ID = "ВАШ_ID_ОТ_USERINFOBOT"
 
 # ============================================================
 # ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
@@ -52,7 +52,8 @@ last_signal = "Нет сигнала"
 signal_history = []
 position = None
 highest_price = 0
-last_report_time = 0  # Для ежечасного отчета
+last_report_time = 0          # Для ежечасного отчета
+last_15min_report = 0         # Для отчета каждые 15 минут
 
 # ============================================================
 # ФУНКЦИЯ ОТПРАВКИ В TELEGRAM
@@ -76,11 +77,11 @@ def send_telegram(message):
         logger.error(f"❌ Ошибка Telegram: {e}")
 
 # ============================================================
-# ЕЖЕЧАСНЫЙ ОТЧЕТ
+# ОТЧЕТЫ
 # ============================================================
 
 def send_hourly_report():
-    """Отправить ежечасный отчет в Telegram"""
+    """Ежечасный отчет"""
     global current_price, position, last_signal
     
     try:
@@ -88,7 +89,6 @@ def send_hourly_report():
         data = response.json()
         price = float(data["price"])
         
-        # Изменение за час
         klines = get_klines(2)
         if klines and len(klines) >= 2:
             old_price = klines[0]["close"]
@@ -96,16 +96,14 @@ def send_hourly_report():
         else:
             change_1h = 0
         
-        # Позиция
         pos_info = "Нет позиции"
         pnl_info = "0.00"
         entry_info = "—"
         if position:
+            pnl = (price - position["entry_price"]) * position["quantity"]
             pos_info = f"Есть ({position['quantity']:.3f} BTC)"
-            pnl_info = f"{(price - position['entry_price']) * position['quantity']:.2f}"
+            pnl_info = f"{pnl:+.2f}"
             entry_info = f"{position['entry_price']:.2f}"
-        
-        last_signal_text = last_signal if last_signal else "Нет сигнала"
         
         msg = f"""
 📊 <b>ЕЖЕЧАСНЫЙ ОТЧЕТ</b>
@@ -118,13 +116,46 @@ def send_hourly_report():
 📈 <b>PnL:</b> {pnl_info} USDT
 📉 <b>Цена входа:</b> {entry_info}
 
-📱 <b>Последний сигнал:</b> {last_signal_text}
+📱 <b>Последний сигнал:</b> {last_signal}
 ⏳ <b>Следующая проверка:</b> через 5 минут
         """
         send_telegram(msg)
         
     except Exception as e:
         logger.error(f"Ошибка отправки отчета: {e}")
+
+def send_15min_report():
+    """Отчет каждые 15 минут"""
+    global current_price, position, last_signal
+    
+    try:
+        price = current_price
+        
+        pos_info = "Нет позиции"
+        pnl_info = "0.00"
+        if position:
+            pnl = (price - position["entry_price"]) * position["quantity"]
+            pos_info = f"Есть ({position['quantity']:.3f} BTC)"
+            pnl_info = f"{pnl:+.2f}"
+        
+        # Получаем силу сигнала
+        analysis = analyze_market()
+        score = analysis.get("score", 0)
+        
+        msg = f"""
+🔄 <b>ОТЧЕТ (15 минут)</b>
+⏰ Время: {datetime.now().strftime('%H:%M:%S')}
+
+💰 <b>BTC:</b> {price:.2f} USDT
+📊 <b>Сигнал:</b> {last_signal}
+📊 <b>Сила:</b> {score:.1f}
+📊 <b>Позиция:</b> {pos_info}
+📈 <b>PnL:</b> {pnl_info} USDT
+        """
+        send_telegram(msg)
+        
+    except Exception as e:
+        logger.error(f"Ошибка отправки 15-минутного отчета: {e}")
 
 # ============================================================
 # СТРАНИЦЫ (ЭНДПОИНТЫ)
@@ -557,12 +588,20 @@ def execute_trade(side):
 # ============================================================
 
 def check_market():
-    global last_signal, signal_history, position, balance, highest_price, last_report_time
+    global last_signal, signal_history, position, balance, highest_price, last_report_time, last_15min_report
     
     send_telegram("🚀 <b>Умный бот запущен!</b> Частичная фиксация + трейлинг-стоп активны.")
     
     while True:
         try:
+            # ============================================================
+            # ОТЧЕТ КАЖДЫЕ 15 МИНУТ
+            # ============================================================
+            current_15min = int(time.time() // 900)  # 900 секунд = 15 минут
+            if current_15min != last_15min_report:
+                last_15min_report = current_15min
+                send_15min_report()
+            
             # ============================================================
             # ЕЖЕЧАСНЫЙ ОТЧЕТ
             # ============================================================
@@ -678,13 +717,14 @@ def check_market():
 
 if __name__ == "__main__":
     logger.info("=" * 60)
-    logger.info("🤖 УМНЫЙ БОТ С ЕЖЕЧАСНЫМ ОТЧЕТОМ ЗАПУЩЕН")
+    logger.info("🤖 УМНЫЙ БОТ С ОТЧЕТАМИ ЗАПУЩЕН")
     logger.info(f"📊 Символ: {SYMBOL}")
     logger.info(f"💰 Баланс: {balance:.2f} USDT")
     logger.info(f"📉 Риск: {RISK_PERCENT}% (МАКС {balance * (RISK_PERCENT / 100):.2f} USDT)")
     logger.info(f"📈 Частичная фиксация: {TP1}%, {TP2}%, трейлинг с {TP3}%")
     logger.info("📱 Telegram уведомления: ВКЛЮЧЕНЫ")
     logger.info("📊 Ежечасный отчет: ВКЛЮЧЕН")
+    logger.info("📊 Отчет каждые 15 минут: ВКЛЮЧЕН")
     logger.info("=" * 60)
     
     thread = threading.Thread(target=check_market, daemon=True)
