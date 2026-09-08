@@ -40,8 +40,8 @@ TP3 = 6.0             # Трейлинг-стоп с +6%
 # TELEGRAM НАСТРОЙКИ (ВСТАВЬТЕ СВОИ ДАННЫЕ!)
 # ============================================================
 
-TELEGRAM_BOT_TOKEN = "ВАШ_ТОКЕН_ОТ_BOTFATHER"
-TELEGRAM_CHAT_ID = "ВАШ_ID_ОТ_USERINFOBOT"
+TELEGRAM_BOT_TOKEN = "8930303145:AAEI-SoKhSg5nH_PcMqwyHSiLoNw5QibQC8"
+TELEGRAM_CHAT_ID = "6867317571"
 
 # ============================================================
 # ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
