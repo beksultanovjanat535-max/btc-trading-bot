@@ -24,16 +24,20 @@ app = Flask(__name__)
 
 SYMBOL = "BTCUSDT"
 CHECK_INTERVAL = 300  # 5 минут
-RISK_PERCENT = 1.0    # 1% риск (оставляем)
+RISK_PERCENT = 1.0
 LEVERAGE = 1
 
-balance = 150         # Баланс
-SL_PERCENT = 1.5      # Стоп-лосс
+balance = 150
+SL_PERCENT = 1.5
 
-# НОВЫЕ ПОРОГИ (чаще фиксация)
-TP1 = 0.8             # Продажа 20% при +0.8%
-TP2 = 1.8             # Продажа 30% при +1.8%
+# ФИКСАЦИЯ ПРИБЫЛИ
+TP1 = 0.8             # 20% при +0.8%
+TP2 = 1.8             # 30% при +1.8%
 TP3 = 2.5             # Трейлинг-стоп с +2.5%
+
+# НОВЫЕ ПОРОГИ
+SELL_THRESHOLD = -0.5   # Порог SELL
+MAX_HOLD_TIME = 7200    # 2 часа — макс. время удержания
 
 # ============================================================
 # TELEGRAM
@@ -50,6 +54,7 @@ current_price = 0
 last_signal = "Нет сигнала"
 signal_history = []
 position = None
+position_open_time = 0
 highest_price = 0
 last_report_time = 0
 last_15min_report = 0
@@ -269,11 +274,12 @@ def analyze_market():
     signal = "NO"
     reason = f"Слабый сигнал ({score:.1f})"
 
-    # 🔥 НОВЫЙ ПОРОГ 1.5
+    # BUY порог 1.5
     if score >= 1.5:
         signal = "BUY"
         reason = f"BUY ({score:.1f}): {', '.join(sigs)}"
-    elif score <= -1.5:
+    # SELL порог -0.5 (снижен!)
+    elif score <= SELL_THRESHOLD:
         signal = "SELL"
         reason = f"SELL ({score:.1f}): {', '.join(sigs)}"
 
@@ -307,7 +313,7 @@ def smart_sell():
             balance += sq * p
             position["quantity"] -= sq
             position["tp1"] = True
-            send_telegram(f"📈 <b>ФИКСАЦИЯ 20%</b>\n💵 {p:.2f} USDT\n📊 +{gain:.2f}%")
+            send_telegram(f"📈 <b>ФИКСАЦИЯ 20%</b>\n💵 {p:.2f}\n📊 +{gain:.2f}%")
             logger.info(f"✅ 20% при +{gain:.2f}%")
 
         elif gain >= TP2 and not position.get("tp2"):
@@ -315,7 +321,7 @@ def smart_sell():
             balance += sq * p
             position["quantity"] -= sq
             position["tp2"] = True
-            send_telegram(f"📈 <b>ФИКСАЦИЯ 30%</b>\n💵 {p:.2f} USDT\n📊 +{gain:.2f}%")
+            send_telegram(f"📈 <b>ФИКСАЦИЯ 30%</b>\n💵 {p:.2f}\n📊 +{gain:.2f}%")
             logger.info(f"✅ 30% при +{gain:.2f}%")
 
         elif gain >= TP3:
@@ -337,7 +343,7 @@ def smart_sell():
 # ============================================================
 
 def execute_trade(side):
-    global balance, position, last_signal, highest_price
+    global balance, position, last_signal, highest_price, position_open_time
     try:
         p = current_price
         if p == 0: return {"error": "Нет цены"}
@@ -352,6 +358,7 @@ def execute_trade(side):
             if balance < cost: return {"error": "Мало баланса"}
             balance -= cost
             highest_price = p
+            position_open_time = time.time()
             position = {
                 "side": "LONG", "quantity": q, "entry_price": p,
                 "sl_price": p - sld, "tp1": False, "tp2": False
@@ -375,6 +382,7 @@ def execute_trade(side):
             position = None
             last_signal = "SELL"
             highest_price = 0
+            position_open_time = 0
             emoji = "📈" if pnl > 0 else "📉"
             txt = f"ПРИБЫЛЬ: +{pnl:.2f} ✅" if pnl > 0 else f"УБЫТОК: {pnl:.2f} ❌"
             send_telegram(f"🔴 <b>ПРОДАЖА</b>\n{emoji} {txt}\n💵 {p:.2f}\n📊 {balance:.2f}")
@@ -391,9 +399,9 @@ def execute_trade(side):
 
 def check_market():
     global last_signal, signal_history, position, balance, highest_price
-    global last_report_time, last_15min_report, current_price
+    global last_report_time, last_15min_report, current_price, position_open_time
 
-    send_telegram("🚀 <b>Умный бот запущен!</b>\nПорог 1.5 | Фиксация: +0.8%, +1.8%")
+    send_telegram("🚀 <b>Бот v5.0 запущен!</b>\nБыстрая фиксация + умный выход")
 
     while True:
         try:
@@ -415,23 +423,52 @@ def check_market():
                 time.sleep(60)
                 continue
 
-            # Позиция
+            # ============================================================
+            # УПРАВЛЕНИЕ ПОЗИЦИЕЙ
+            # ============================================================
             if position:
                 ep = position["entry_price"]
                 gain = (current_price - ep) / ep * 100
-                logger.info(f"📊 Позиция: +{gain:.2f}%")
+                hold_time = now - position_open_time if position_open_time else 0
+                logger.info(f"📊 Позиция: +{gain:.2f}% | Держим {hold_time/60:.0f} мин")
 
+                # 1. СТОП-ЛОСС
                 if current_price <= position["sl_price"]:
                     logger.info("🔴 STOP-LOSS")
                     execute_trade("SELL")
                     time.sleep(5)
                     continue
 
+                # 2. УМНАЯ ПРОДАЖА (частичная фиксация)
                 smart_sell()
+                if not position:
+                    time.sleep(2)
+                    continue
+
+                # 3. ПРИНУДИТЕЛЬНЫЙ ВЫХОД ПО ВРЕМЕНИ
+                if hold_time > MAX_HOLD_TIME:
+                    logger.info(f"⏰ Таймаут {hold_time/60:.0f} мин — продажа")
+                    send_telegram(f"⏰ <b>ВЫХОД ПО ВРЕМЕНИ</b>\nДержали {hold_time/60:.0f} мин\nPnL: {gain:.2f}%")
+                    execute_trade("SELL")
+                    time.sleep(5)
+                    continue
+
+                # 4. УМНЫЙ ВЫХОД ПО СЛАБОМУ СИГНАЛУ
+                analysis = analyze_market()
+                score = analysis.get("score", 0)
+                if score < 0.5 and gain < 0.3:
+                    logger.info(f"⚠️ Слабый сигнал ({score:.1f}) + PnL ({gain:.2f}%) — продажа")
+                    send_telegram(f"⚠️ <b>ВЫХОД ПО СИГНАЛУ</b>\nСила: {score:.1f}\nPnL: {gain:.2f}%")
+                    execute_trade("SELL")
+                    time.sleep(5)
+                    continue
+
                 time.sleep(2)
                 continue
 
-            # Анализ
+            # ============================================================
+            # ПОИСК СИГНАЛА
+            # ============================================================
             analysis = analyze_market()
             signal = analysis["signal"]
             reason = analysis["reason"]
@@ -451,20 +488,6 @@ def check_market():
                 send_telegram(f"🟢 <b>СИГНАЛ BUY</b>\n📊 {reason}\n💵 {current_price:.2f}")
                 execute_trade("BUY")
 
-            elif signal == "SELL" and position:
-                logger.info(f"🔴 SELL! {reason}")
-                send_telegram(f"🔴 <b>СИГНАЛ SELL</b>\n📊 {reason}\n💵 {current_price:.2f}")
-                execute_trade("SELL")
-
-            # 🔥 Умный выход при слабом сигнале
-            elif position and score < 0.5:
-                ep = position["entry_price"]
-                gain = (current_price - ep) / ep * 100
-                if gain < 0.3:
-                    logger.info(f"⚠️ Слабый сигнал ({score:.1f}), продажа")
-                    send_telegram(f"⚠️ <b>ВЫХОД</b>\nСлабый сигнал: {score:.1f}")
-                    execute_trade("SELL")
-
         except Exception as e:
             logger.error(f"❌ {e}")
             send_telegram(f"⚠️ Ошибка: {e}")
@@ -476,10 +499,11 @@ def check_market():
 # ============================================================
 
 if __name__ == "__main__":
-    logger.info("🤖 БОТ v4.2 ЗАПУЩЕН")
+    logger.info("🤖 БОТ v5.0 ЗАПУЩЕН")
     logger.info(f"💰 Баланс: {balance} USDT | Риск: {RISK_PERCENT}%")
     logger.info(f"🎯 Фиксация: +{TP1}% (20%), +{TP2}% (30%), трейлинг +{TP3}%")
-    logger.info(f"⚡ Порог сигнала: 1.5")
+    logger.info(f"⚡ Порог BUY: 1.5 | Порог SELL: {SELL_THRESHOLD}")
+    logger.info(f"⏰ Таймаут позиции: {MAX_HOLD_TIME/3600:.1f} ч")
 
     thread = threading.Thread(target=check_market, daemon=True)
     thread.start()
