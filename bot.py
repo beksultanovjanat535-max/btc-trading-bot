@@ -35,9 +35,9 @@ TP1 = 0.8             # 20% при +0.8%
 TP2 = 1.8             # 30% при +1.8%
 TP3 = 2.5             # Трейлинг-стоп с +2.5%
 
-# НОВЫЕ ПОРОГИ
-SELL_THRESHOLD = -0.5   # Порог SELL
-MAX_HOLD_TIME = 7200    # 2 часа — макс. время удержания
+# УМНЫЙ ВЫХОД
+MAX_HOLD_TIME = 10800     # 3 часа
+EARLY_EXIT_PERCENT = -1.2 # Выход при -1.2% (перед SL)
 
 # ============================================================
 # TELEGRAM
@@ -274,12 +274,10 @@ def analyze_market():
     signal = "NO"
     reason = f"Слабый сигнал ({score:.1f})"
 
-    # BUY порог 1.5
-    if score >= 1.5:
+    if score >= 2.0:
         signal = "BUY"
         reason = f"BUY ({score:.1f}): {', '.join(sigs)}"
-    # SELL порог -0.5 (снижен!)
-    elif score <= SELL_THRESHOLD:
+    elif score <= -2.5:
         signal = "SELL"
         reason = f"SELL ({score:.1f}): {', '.join(sigs)}"
 
@@ -293,7 +291,7 @@ def analyze_market():
     }
 
 # ============================================================
-# УМНАЯ ПРОДАЖА
+# УМНАЯ ПРОДАЖА (частичная фиксация)
 # ============================================================
 
 def smart_sell():
@@ -308,22 +306,25 @@ def smart_sell():
         if p > highest_price: highest_price = p
         gain = (p - ep) / ep * 100
 
+        # ФИКСАЦИЯ 20% при +0.8%
         if gain >= TP1 and not position.get("tp1"):
             sq = q * 0.2
             balance += sq * p
             position["quantity"] -= sq
             position["tp1"] = True
             send_telegram(f"📈 <b>ФИКСАЦИЯ 20%</b>\n💵 {p:.2f}\n📊 +{gain:.2f}%")
-            logger.info(f"✅ 20% при +{gain:.2f}%")
+            logger.info(f"✅ Фиксация 20% при +{gain:.2f}%")
 
+        # ФИКСАЦИЯ 30% при +1.8%
         elif gain >= TP2 and not position.get("tp2"):
             sq = position["quantity"] * 0.3
             balance += sq * p
             position["quantity"] -= sq
             position["tp2"] = True
             send_telegram(f"📈 <b>ФИКСАЦИЯ 30%</b>\n💵 {p:.2f}\n📊 +{gain:.2f}%")
-            logger.info(f"✅ 30% при +{gain:.2f}%")
+            logger.info(f"✅ Фиксация 30% при +{gain:.2f}%")
 
+        # ТРЕЙЛИНГ-СТОП с +2.5%
         elif gain >= TP3:
             trail = highest_price * 0.985
             if p <= trail:
@@ -401,7 +402,7 @@ def check_market():
     global last_signal, signal_history, position, balance, highest_price
     global last_report_time, last_15min_report, current_price, position_open_time
 
-    send_telegram("🚀 <b>Бот v5.0 запущен!</b>\nБыстрая фиксация + умный выход")
+    send_telegram("🚀 <b>Бот v5.1 запущен!</b>\nФиксация +0.8% / +1.8% / трейлинг +2.5%")
 
     while True:
         try:
@@ -424,7 +425,7 @@ def check_market():
                 continue
 
             # ============================================================
-            # УПРАВЛЕНИЕ ПОЗИЦИЕЙ
+            # УПРАВЛЕНИЕ ПОЗИЦИЕЙ (УМНОЕ УДЕРЖАНИЕ)
             # ============================================================
             if position:
                 ep = position["entry_price"]
@@ -432,7 +433,7 @@ def check_market():
                 hold_time = now - position_open_time if position_open_time else 0
                 logger.info(f"📊 Позиция: +{gain:.2f}% | Держим {hold_time/60:.0f} мин")
 
-                # 1. СТОП-ЛОСС
+                # 1. СТОП-ЛОСС (главная защита)
                 if current_price <= position["sl_price"]:
                     logger.info("🔴 STOP-LOSS")
                     execute_trade("SELL")
@@ -445,24 +446,23 @@ def check_market():
                     time.sleep(2)
                     continue
 
-                # 3. ПРИНУДИТЕЛЬНЫЙ ВЫХОД ПО ВРЕМЕНИ
-                if hold_time > MAX_HOLD_TIME:
+                # 3. УМНЫЙ ВЫХОД ПРИ БОЛЬШОМ МИНУСЕ (защита перед SL)
+                if gain <= EARLY_EXIT_PERCENT:
+                    logger.info(f"⚠️ Ранний выход: {gain:.2f}%")
+                    send_telegram(f"⚠️ <b>РАННИЙ ВЫХОД</b>\nPnL: {gain:.2f}%")
+                    execute_trade("SELL")
+                    time.sleep(5)
+                    continue
+
+                # 4. ТАЙМАУТ (только если PnL отрицательный)
+                if hold_time > MAX_HOLD_TIME and gain < 0:
                     logger.info(f"⏰ Таймаут {hold_time/60:.0f} мин — продажа")
                     send_telegram(f"⏰ <b>ВЫХОД ПО ВРЕМЕНИ</b>\nДержали {hold_time/60:.0f} мин\nPnL: {gain:.2f}%")
                     execute_trade("SELL")
                     time.sleep(5)
                     continue
 
-                # 4. УМНЫЙ ВЫХОД ПО СЛАБОМУ СИГНАЛУ
-                analysis = analyze_market()
-                score = analysis.get("score", 0)
-                if score < 0.5 and gain < 0.3:
-                    logger.info(f"⚠️ Слабый сигнал ({score:.1f}) + PnL ({gain:.2f}%) — продажа")
-                    send_telegram(f"⚠️ <b>ВЫХОД ПО СИГНАЛУ</b>\nСила: {score:.1f}\nPnL: {gain:.2f}%")
-                    execute_trade("SELL")
-                    time.sleep(5)
-                    continue
-
+                # 5. Если PnL положительный — НЕ ПРОДАЁМ, ждём фиксации
                 time.sleep(2)
                 continue
 
@@ -499,11 +499,12 @@ def check_market():
 # ============================================================
 
 if __name__ == "__main__":
-    logger.info("🤖 БОТ v5.0 ЗАПУЩЕН")
+    logger.info("🤖 БОТ v5.1 ЗАПУЩЕН")
     logger.info(f"💰 Баланс: {balance} USDT | Риск: {RISK_PERCENT}%")
     logger.info(f"🎯 Фиксация: +{TP1}% (20%), +{TP2}% (30%), трейлинг +{TP3}%")
-    logger.info(f"⚡ Порог BUY: 1.5 | Порог SELL: {SELL_THRESHOLD}")
-    logger.info(f"⏰ Таймаут позиции: {MAX_HOLD_TIME/3600:.1f} ч")
+    logger.info(f"⚡ Порог BUY: 2.0 | Порог SELL: -2.5")
+    logger.info(f"⏰ Таймаут: {MAX_HOLD_TIME/3600:.1f} ч (только при минусе)")
+    logger.info(f"🛡️ Ранний выход: {EARLY_EXIT_PERCENT}%")
 
     thread = threading.Thread(target=check_market, daemon=True)
     thread.start()
