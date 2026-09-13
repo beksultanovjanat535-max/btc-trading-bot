@@ -23,24 +23,27 @@ app = Flask(__name__)
 # ============================================================
 
 SYMBOL = "BTCUSDT"
-CHECK_INTERVAL = 300  # 5 минут
+CHECK_INTERVAL = 300
 RISK_PERCENT = 1.0
-LEVERAGE = 1
 
 balance = 150
 SL_PERCENT = 1.5
 
-# УВЕЛИЧЕННЫЕ TP
-TP1 = 1.2             # 20% при +1.2%
-TP2 = 2.5             # 30% при +2.5%
-TP3 = 4.0             # Трейлинг-стоп с +4.0%
+# РЕЖИМЫ TP
+MODES = {
+    "safe": {"tp1": 1.2, "tp2": 2.5, "tp3": 4.0},
+    "profit": {"tp1": 3.0, "tp2": 6.0, "tp3": 10.0}
+}
+current_mode = "profit"  # старт в прибыльном режиме
 
-# БЫСТРЫЙ ВЫХОД
-MAX_HOLD_TIME = 3600      # 1 час
-EARLY_EXIT_PERCENT = -0.6 # Ранний выход при -0.6%
+# DCA
+DCA_ENABLED = True
+DCA_PERCENT = -0.5  # усреднение при -0.5%
+DCA_MAX_TIMES = 2   # макс 2 докупки
 
-# ПОРОГ BUY
-BUY_THRESHOLD = 2.5
+# ТАЙМАУТ
+MAX_HOLD_TIME = 7200  # 2 часа
+EARLY_EXIT_PERCENT = -1.0
 
 # ============================================================
 # TELEGRAM
@@ -84,7 +87,7 @@ def send_telegram(message):
 # ============================================================
 
 def send_15min_report():
-    global position, last_signal
+    global position, last_signal, current_mode
     try:
         r = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
         price = float(r.json()["price"])
@@ -99,6 +102,7 @@ def send_15min_report():
         msg = f"""
 🔄 <b>ОТЧЕТ (15 мин)</b>
 ⏰ {datetime.now().strftime('%H:%M:%S')}
+🎯 Режим: {current_mode.upper()}
 💰 BTC: {price:.2f}
 📊 Сигнал: {last_signal}
 📊 Сила: {score:.1f}
@@ -140,24 +144,24 @@ def send_hourly_report():
 
 @app.route("/")
 def home():
-    return jsonify({"status": "running", "balance": balance, "price": current_price})
+    return jsonify({"status": "running", "mode": current_mode, "balance": balance})
 
 @app.route("/status")
 def status():
     return jsonify({
         "symbol": SYMBOL, "price": current_price, "balance": balance,
         "position": position, "last_signal": last_signal,
-        "signal_history": signal_history[-5:]
+        "mode": current_mode
     })
 
-@app.route("/signals")
-def signals():
-    return jsonify(analyze_market())
-
-@app.route("/price")
-def price():
-    r = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
-    return jsonify(r.json())
+@app.route("/mode/<mode>")
+def set_mode(mode):
+    global current_mode
+    if mode in MODES:
+        current_mode = mode
+        send_telegram(f"🎯 Режим изменён: <b>{mode.upper()}</b>")
+        return jsonify({"status": "ok", "mode": mode})
+    return jsonify({"error": "Неверный режим"}), 400
 
 # ============================================================
 # ИНДИКАТОРЫ
@@ -223,26 +227,13 @@ def sr(klines, lookback=20):
     c = [k["close"] for k in klines[-lookback:]]
     return min(l), sum(c)/len(c), max(h)
 
-# ============================================================
-# ФИЛЬТР ТРЕНДА
-# ============================================================
-
 def check_trend(klines):
-    """Проверка тренда: не покупать, если падает"""
-    if len(klines) < 12:
-        return True  # мало данных — не фильтруем
-
-    # Изменение цены за последний час (12 свечей по 5 мин)
+    if len(klines) < 12: return True
     old_price = klines[-12]["close"]
     new_price = klines[-1]["close"]
     change_1h = (new_price - old_price) / old_price * 100
-
     logger.info(f"📉 Тренд за час: {change_1h:+.2f}%")
-
-    # Не покупать, если падает больше 1% за час
-    if change_1h < -1.0:
-        return False
-
+    if change_1h < -1.0: return False
     return True
 
 # ============================================================
@@ -253,74 +244,43 @@ def analyze_market():
     global current_price
     klines = get_klines(100)
     if not klines or len(klines) < 30:
-        return {"signal": "NO", "reason": "Нет данных", "indicators": {}, "score": 0}
+        return {"signal": "NO", "reason": "Нет данных", "score": 0}
     closes = [k["close"] for k in klines]
     current_price = closes[-1]
 
-    e9 = ema(closes, 9)
-    e21 = ema(closes, 21)
-    pe9 = ema(closes[:-1], 9)
-    pe21 = ema(closes[:-1], 21)
-    r = rsi(closes)
-    a = atr(klines)
+    e9 = ema(closes, 9); e21 = ema(closes, 21)
+    pe9 = ema(closes[:-1], 9); pe21 = ema(closes[:-1], 21)
+    r = rsi(closes); a = atr(klines)
     ub, mb, lb = bb(closes)
     m, ms, mh = macd(closes)
     sup, piv, res = sr(klines)
 
-    score = 0
-    sigs = []
-
-    if pe9 <= pe21 and e9 > e21:
-        score += 2; sigs.append("BUY_EMA")
-    elif pe9 >= pe21 and e9 < e21:
-        score -= 2; sigs.append("SELL_EMA")
-
-    if r < 35:
-        score += 2; sigs.append("BUY_RSI")
-        if r < 28: score += 1; sigs.append("BUY_RSI_STRONG")
-    elif r > 65:
-        score -= 2; sigs.append("SELL_RSI")
-        if r > 72: score -= 1; sigs.append("SELL_RSI_STRONG")
-
-    if lb and current_price < lb:
-        score += 1.5; sigs.append("BUY_BB")
-    elif ub and current_price > ub:
-        score -= 1.5; sigs.append("SELL_BB")
-
+    score = 0; sigs = []
+    if pe9 <= pe21 and e9 > e21: score += 2; sigs.append("BUY_EMA")
+    elif pe9 >= pe21 and e9 < e21: score -= 2; sigs.append("SELL_EMA")
+    if r < 35: score += 2; sigs.append("BUY_RSI")
+    elif r > 65: score -= 2; sigs.append("SELL_RSI")
+    if lb and current_price < lb: score += 1.5; sigs.append("BUY_BB")
+    elif ub and current_price > ub: score -= 1.5; sigs.append("SELL_BB")
     if m and ms:
         if m > ms and mh > 0: score += 1.5; sigs.append("BUY_MACD")
         elif m < ms and mh < 0: score -= 1.5; sigs.append("SELL_MACD")
+    if current_price <= sup * 1.01: score += 1; sigs.append("BUY_SUPPORT")
+    elif current_price >= res * 0.99: score -= 1; sigs.append("SELL_RESISTANCE")
 
-    if current_price <= sup * 1.01:
-        score += 1; sigs.append("BUY_SUPPORT")
-    elif current_price >= res * 0.99:
-        score -= 1; sigs.append("SELL_RESISTANCE")
-
-    signal = "NO"
-    reason = f"Слабый сигнал ({score:.1f})"
-
-    if score >= BUY_THRESHOLD:
-        # ФИЛЬТР ТРЕНДА
+    signal = "NO"; reason = f"Слабый ({score:.1f})"
+    if score >= 2.5:
         if check_trend(klines):
-            signal = "BUY"
-            reason = f"BUY ({score:.1f}): {', '.join(sigs)}"
+            signal = "BUY"; reason = f"BUY ({score:.1f}): {', '.join(sigs)}"
         else:
-            reason = f"BUY отменён (тренд вниз) ({score:.1f})"
+            reason = f"BUY отменён (тренд вниз)"
     elif score <= -2.5:
-        signal = "SELL"
-        reason = f"SELL ({score:.1f}): {', '.join(sigs)}"
+        signal = "SELL"; reason = f"SELL ({score:.1f}): {', '.join(sigs)}"
 
-    return {
-        "signal": signal, "reason": reason, "score": round(score, 1),
-        "signals": sigs,
-        "indicators": {
-            "ema9": round(e9, 2), "ema21": round(e21, 2), "rsi": round(r, 2),
-            "atr": round(a, 2), "support": round(sup, 2), "resistance": round(res, 2)
-        }
-    }
+    return {"signal": signal, "reason": reason, "score": round(score, 1), "atr": round(a, 2)}
 
 # ============================================================
-# УМНАЯ ПРОДАЖА
+# УМНАЯ ПРОДАЖА + DCA
 # ============================================================
 
 def smart_sell():
@@ -331,37 +291,54 @@ def smart_sell():
         p = current_price
         ep = position["entry_price"]
         q = position["quantity"]
+        mode = MODES[current_mode]
 
         if p > highest_price: highest_price = p
         gain = (p - ep) / ep * 100
 
-        # ФИКСАЦИЯ 20% при +1.2%
-        if gain >= TP1 and not position.get("tp1"):
+        # DCA (усреднение)
+        if DCA_ENABLED and gain <= DCA_PERCENT and position.get("dca_count", 0) < DCA_MAX_TIMES:
+            dca_qty = 0.001
+            cost = dca_qty * p
+            if balance >= cost:
+                balance -= cost
+                total_qty = position["quantity"] + dca_qty
+                avg_price = (position["entry_price"] * position["quantity"] + p * dca_qty) / total_qty
+                position["quantity"] = total_qty
+                position["entry_price"] = avg_price
+                position["dca_count"] = position.get("dca_count", 0) + 1
+                send_telegram(f"🔄 <b>DCA #{position['dca_count']}</b>\n💵 {p:.2f}\n📊 Новая средняя: {avg_price:.2f}")
+                logger.info(f"🔄 DCA #{position['dca_count']} при {p:.2f}")
+
+        # ФИКСАЦИЯ 20%
+        if gain >= mode["tp1"] and not position.get("tp1"):
             sq = q * 0.2
             balance += sq * p
             position["quantity"] -= sq
             position["tp1"] = True
             send_telegram(f"📈 <b>ФИКСАЦИЯ 20%</b>\n💵 {p:.2f}\n📊 +{gain:.2f}%")
-            logger.info(f"✅ Фиксация 20% при +{gain:.2f}%")
+            logger.info(f"✅ 20% при +{gain:.2f}%")
 
-        # ФИКСАЦИЯ 30% при +2.5%
-        elif gain >= TP2 and not position.get("tp2"):
+        # ФИКСАЦИЯ 30%
+        elif gain >= mode["tp2"] and not position.get("tp2"):
             sq = position["quantity"] * 0.3
             balance += sq * p
             position["quantity"] -= sq
             position["tp2"] = True
             send_telegram(f"📈 <b>ФИКСАЦИЯ 30%</b>\n💵 {p:.2f}\n📊 +{gain:.2f}%")
-            logger.info(f"✅ Фиксация 30% при +{gain:.2f}%")
+            logger.info(f"✅ 30% при +{gain:.2f}%")
 
-        # ТРЕЙЛИНГ-СТОП с +4.0%
-        elif gain >= TP3:
-            trail = highest_price * 0.985
+        # ТРЕЙЛИНГ-СТОП по ATR
+        elif gain >= mode["tp3"]:
+            atr_val = atr(get_klines(50), 14)
+            trail_dist = max(atr_val * 1.5, highest_price * 0.01)
+            trail = highest_price - trail_dist
             if p <= trail:
                 sq = position["quantity"]
                 balance += sq * p
                 pnl = (p - ep) * sq
-                send_telegram(f"🔴 <b>ТРЕЙЛИНГ-СТОП</b>\n💵 {p:.2f}\n📈 +{pnl:.2f} USDT")
-                logger.info(f"🔴 Трейлинг-стоп: +{pnl:.2f}")
+                send_telegram(f"🔴 <b>ТРЕЙЛИНГ-СТОП (ATR)</b>\n💵 {p:.2f}\n📈 +{pnl:.2f} USDT")
+                logger.info(f"🔴 Трейлинг: +{pnl:.2f}")
                 position = None
                 last_signal = "SELL"
 
@@ -391,16 +368,18 @@ def execute_trade(side):
             position_open_time = time.time()
             position = {
                 "side": "LONG", "quantity": q, "entry_price": p,
-                "sl_price": p - sld, "tp1": False, "tp2": False
+                "sl_price": p - sld, "tp1": False, "tp2": False, "dca_count": 0
             }
             last_signal = "BUY"
+            mode = MODES[current_mode]
             send_telegram(f"""
 🟢 <b>ПОКУПКА</b>
 💰 {q:.3f} BTC
 💵 {p:.2f} USDT
 📊 Баланс: {balance:.2f}
 🛑 SL: {position['sl_price']:.2f}
-🎯 Фиксация: +{TP1}%, +{TP2}%, трейлинг +{TP3}%
+🎯 Режим: {current_mode.upper()}
+📈 TP: +{mode['tp1']}%, +{mode['tp2']}%, +{mode['tp3']}%
             """)
             return {"status": "ok"}
 
@@ -431,7 +410,7 @@ def check_market():
     global last_signal, signal_history, position, balance, highest_price
     global last_report_time, last_15min_report, current_price, position_open_time
 
-    send_telegram("🚀 <b>Бот v5.3 запущен!</b>\nФильтр тренда + быстрая фиксация")
+    send_telegram(f"🚀 <b>Бот v6.0 запущен!</b>\nРежим: <b>{current_mode.upper()}</b>")
 
     while True:
         try:
@@ -443,7 +422,6 @@ def check_market():
                 last_report_time = int(now // 3600)
                 send_hourly_report()
 
-            # Цена
             try:
                 r = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
                 current_price = float(r.json()["price"])
@@ -453,39 +431,32 @@ def check_market():
                 time.sleep(60)
                 continue
 
-            # ============================================================
-            # УПРАВЛЕНИЕ ПОЗИЦИЕЙ
-            # ============================================================
             if position:
                 ep = position["entry_price"]
                 gain = (current_price - ep) / ep * 100
                 hold_time = now - position_open_time if position_open_time else 0
                 logger.info(f"📊 Позиция: +{gain:.2f}% | Держим {hold_time/60:.0f} мин")
 
-                # 1. СТОП-ЛОСС
                 if current_price <= position["sl_price"]:
                     logger.info("🔴 STOP-LOSS")
                     execute_trade("SELL")
                     time.sleep(5)
                     continue
 
-                # 2. УМНАЯ ПРОДАЖА
                 smart_sell()
                 if not position:
                     time.sleep(2)
                     continue
 
-                # 3. БЫСТРЫЙ ВЫХОД ПРИ МИНУСЕ -0.6%
                 if gain <= EARLY_EXIT_PERCENT:
-                    logger.info(f"⚠️ Быстрый выход: {gain:.2f}%")
-                    send_telegram(f"⚠️ <b>БЫСТРЫЙ ВЫХОД</b>\nPnL: {gain:.2f}%")
+                    logger.info(f"⚠️ Ранний выход: {gain:.2f}%")
+                    send_telegram(f"⚠️ <b>РАННИЙ ВЫХОД</b>\nPnL: {gain:.2f}%")
                     execute_trade("SELL")
                     time.sleep(5)
                     continue
 
-                # 4. ТАЙМАУТ 1 ЧАС
-                if hold_time > MAX_HOLD_TIME:
-                    logger.info(f"⏰ Таймаут {hold_time/60:.0f} мин — продажа")
+                if hold_time > MAX_HOLD_TIME and gain < 0:
+                    logger.info(f"⏰ Таймаут {hold_time/60:.0f} мин")
                     send_telegram(f"⏰ <b>ВЫХОД ПО ВРЕМЕНИ</b>\nДержали {hold_time/60:.0f} мин\nPnL: {gain:.2f}%")
                     execute_trade("SELL")
                     time.sleep(5)
@@ -494,9 +465,6 @@ def check_market():
                 time.sleep(2)
                 continue
 
-            # ============================================================
-            # ПОИСК СИГНАЛА
-            # ============================================================
             analysis = analyze_market()
             signal = analysis["signal"]
             reason = analysis["reason"]
@@ -527,12 +495,10 @@ def check_market():
 # ============================================================
 
 if __name__ == "__main__":
-    logger.info("🤖 БОТ v5.3 ЗАПУЩЕН")
+    logger.info("🤖 БОТ v6.0 ЗАПУЩЕН")
     logger.info(f"💰 Баланс: {balance} USDT | Риск: {RISK_PERCENT}%")
-    logger.info(f"🎯 Фиксация: +{TP1}% (20%), +{TP2}% (30%), трейлинг +{TP3}%")
-    logger.info(f"⚡ Порог BUY: {BUY_THRESHOLD} | Фильтр тренда: ВКЛ")
-    logger.info(f"⏰ Таймаут: {MAX_HOLD_TIME/3600:.1f} ч")
-    logger.info(f"🛡️ Быстрый выход: {EARLY_EXIT_PERCENT}%")
+    logger.info(f"🎯 Режим: {current_mode.upper()}")
+    logger.info(f"📊 DCA: {'ВКЛ' if DCA_ENABLED else 'ВЫКЛ'} | Усреднение при {DCA_PERCENT}%")
 
     thread = threading.Thread(target=check_market, daemon=True)
     thread.start()
